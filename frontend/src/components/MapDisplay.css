@@ -1,0 +1,9 @@
+/* MapDisplay styles are handled inline via Leaflet */
+.leaflet-container {
+  font-family: 'Inter', sans-serif !important;
+}
+
+.custom-marker, .midpoint-marker, .place-marker {
+  background: transparent !important;
+  border: none !important;
+}
