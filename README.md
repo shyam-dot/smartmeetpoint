@@ -18,7 +18,7 @@
 
 MeetHub is a frontend web app that calculates the geographic midpoint between multiple locations, displays realistic travel ETAs, and suggests nearby places. Enter any number of cities, addresses, or landmarks and see where everyone should meet.
 
-> **🎉 Zero Setup Required!** MeetHub runs entirely on free, open-source APIs. No Google API keys, tokens, or backend servers are needed to start.
+> **🎉 Zero Setup Required!** MeetHub runs entirely on free, open-source APIs. No API keys, tokens, or backend servers are needed to start.
 
 ## Features
 
@@ -57,14 +57,11 @@ MeetHub is a frontend web app that calculates the geographic midpoint between mu
 
 2. Start the app
    ```bash
-   cd frontend
    npm install
    npm start
    ```
 
 3. Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-> **Note on the `backend` folder**: The older iterations of this project used a Node.js Express backend and Google Maps API. With the switch to OpenStreetMap and direct client-side requests, the entire app now runs out of the `frontend` folder! You do not need to boot up the backend.
 
 ## Usage
 
