@@ -1,17 +1,24 @@
-import React, { useState, useRef } from "react";
-import axios from "axios";
+import React, { useState, useRef, useEffect } from "react";
+import { io } from "socket.io-client";
 import "./App.css";
 import MapDisplay from "./components/MapDisplay";
+import ResultsPanel from "./components/ResultsPanel";
+import FriendList from "./components/FriendList";
+import { geocodeLocation, getRouteDistance, fetchNearbyPlaces, fetchNearbyTouristPlaces } from "./services/api";
+import { haversineDistance, calculateFairness, calculateOptimalMeetingPoint } from "./utils/math";
 
 const AVATAR_COLORS = [
   "#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6",
   "#ec4899", "#06b6d4", "#f97316", "#14b8a6", "#6366f1",
 ];
+const socket = io("http://localhost:3001");
 
 function App() {
   const [friendName, setFriendName] = useState("");
   const [friendLocation, setFriendLocation] = useState("");
   const [friends, setFriends] = useState([]);
+  const [destinationInput, setDestinationInput] = useState("");
+  const [destinationData, setDestinationData] = useState(null);
   const [coordinates, setCoordinates] = useState([]);
   const [midpoint, setMidpoint] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -19,195 +26,100 @@ function App() {
   const [travelMode, setTravelMode] = useState("car");
   const [distances, setDistances] = useState([]);
   const [places, setPlaces] = useState([]);
+  const [touristPlaces, setTouristPlaces] = useState([]);
+  const [selectedTouristPlace, setSelectedTouristPlace] = useState(null);
   const [fairness, setFairness] = useState(null);
   const [copied, setCopied] = useState(false);
   const [editingIndex, setEditingIndex] = useState(null);
   const [editName, setEditName] = useState("");
   const [editLocation, setEditLocation] = useState("");
+  const [isTracking, setIsTracking] = useState(false);
+  const [liveLocation, setLiveLocation] = useState(null);
+  const [otherLiveLocations, setOtherLiveLocations] = useState({});
+  const trackingIdRef = useRef(null);
   const mapRef = useRef(null);
 
-  const handleAddFriend = () => {
-    const loc = friendLocation.trim();
-    const name = friendName.trim() || `Friend ${friends.length + 1}`;
-    if (!loc) {
-      setError("Please enter a location");
-      return;
-    }
-    if (friends.find((f) => f.location === loc)) {
-      setError("This location is already added");
-      return;
-    }
+  const [sessionId, setSessionId] = useState(() => {
+    // Generate or get existing session ID
+    return Math.random().toString(36).substring(2, 9);
+  });
 
-    const usedColors = friends.map(f => f.color);
-    const availableColors = AVATAR_COLORS.filter(c => !usedColors.includes(c));
-    const nextColor = availableColors.length > 0 ? availableColors[0] : AVATAR_COLORS[friends.length % AVATAR_COLORS.length];
-
-    setFriends([...friends, {
-      name,
-      location: loc,
-      color: nextColor,
-    }]);
-    setFriendName("");
-    setFriendLocation("");
-    setError(null);
-  };
-
-  const handleEditFriend = (index) => {
-    setEditingIndex(index);
-    setEditName(friends[index].name);
-    setEditLocation(friends[index].location);
-  };
-
-  const handleSaveEdit = (index) => {
-    const loc = editLocation.trim();
-    if (!loc) {
-      setEditingIndex(null);
-      return;
+  // Setup Socket, Shared Session Syncing
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlSession = params.get("session");
+    
+    // Automatically join the session
+    const currentSession = urlSession || sessionId;
+    if (urlSession && urlSession !== sessionId) {
+      setSessionId(urlSession);
     }
     
-    // Check if new location is already in another friend's address
-    if (friends.some((f, i) => i !== index && f.location === loc)) {
-      setError("This location is already added by someone else");
-      return;
+    socket.emit("join_session", currentSession);
+
+    // Initial data load from share link (legacy fallback just in case)
+    const sharedData = params.get("data");
+    if (sharedData) {
+      try {
+        const decoded = JSON.parse(decodeURIComponent(sharedData));
+        if (decoded && Array.isArray(decoded) && decoded.length > 0) {
+          setFriends(decoded);
+          socket.emit("sync_friends", { sessionId: currentSession, friends: decoded });
+          setTimeout(() => handleFindMeetingPoint(decoded), 100);
+        }
+      } catch (e) {
+        console.error("Failed to parse shared data");
+      }
     }
+
+    // Listen for live updates from OTHER users in the session
+    const handleUpdate = (updatedFriends) => {
+      setFriends(updatedFriends);
+      // Auto-recalculate meeting spot for everyone when data changes!
+      if (updatedFriends.length >= 2) {
+        handleFindMeetingPoint(updatedFriends);
+      } else {
+        setCoordinates([]);
+        setMidpoint(null);
+        setDistances([]);
+        setPlaces([]);
+        setTouristPlaces([]);
+        setFairness(null);
+        setDestinationData(null);
+      }
+    };
+
+    socket.on("update_friends", handleUpdate);
     
-    const newFriends = [...friends];
-    newFriends[index] = { ...newFriends[index], name: editName.trim() || `Friend ${index + 1}`, location: loc };
-    setFriends(newFriends);
-    setEditingIndex(null);
-    setError(null);
-    
-    // Reset results since a location changed
-    setCoordinates([]);
-    setMidpoint(null);
-    setDistances([]);
-    setPlaces([]);
-    setFairness(null);
-  };
-
-  const handleRemoveFriend = (index) => {
-    const newFriends = friends.filter((_, i) => i !== index);
-    setFriends(newFriends);
-    if (newFriends.length < 2) {
-      setCoordinates([]);
-      setMidpoint(null);
-      setDistances([]);
-      setPlaces([]);
-      setFairness(null);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleAddFriend();
-    }
-  };
-
-  const useMyLocation = () => {
-    if (!navigator.geolocation) {
-      setError("Geolocation is not supported by your browser");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude.toFixed(4);
-        const lng = pos.coords.longitude.toFixed(4);
-        setFriendLocation(`${lat}, ${lng}`);
-        if (!friendName.trim()) setFriendName("Me");
-      },
-      () => setError("Could not get your location. Please allow permissions.")
-    );
-  };
-
-  const geocodeLocation = async (location) => {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-    const response = await axios.get(url, {
-      headers: { "Accept-Language": "en" },
+    socket.on("update_live_location", (data) => {
+      if (data && data.userId) {
+        setOtherLiveLocations(prev => ({ ...prev, [data.userId]: { lat: data.lat, lng: data.lng } }));
+      }
     });
-    if (response.data && response.data.length > 0) {
-      return {
-        lat: parseFloat(response.data[0].lat),
-        lng: parseFloat(response.data[0].lon),
-        display: response.data[0].display_name,
-      };
-    }
-    return null;
-  };
+    
+    socket.on("remove_live_location", (userId) => {
+      setOtherLiveLocations(prev => {
+        const next = { ...prev };
+        delete next[userId];
+        return next;
+      });
+    });
 
-  const getRouteDistance = async (fromLat, fromLng, toLat, toLng, profile) => {
-    const profileMap = { car: "car", bike: "bike", walk: "foot" };
-    const p = profileMap[profile] || "car";
-    try {
-      const url = `https://router.project-osrm.org/route/v1/${p === "car" ? "driving" : p === "bike" ? "cycling" : "walking"}/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`;
-      const res = await axios.get(url);
-      if (res.data && res.data.routes && res.data.routes.length > 0) {
-        const route = res.data.routes[0];
-        return {
-          distance: route.distance,
-          duration: route.duration,
-          geometry: route.geometry,
-        };
-      }
-    } catch (e) {
-      console.error("Route error:", e);
-    }
-    return null;
-  };
+    // Cleanup
+    return () => {
+      socket.off("update_friends", handleUpdate);
+      socket.off("update_live_location");
+      socket.off("remove_live_location");
+    };
+    // eslint-disable-next-line
+  }, []);
 
-  const fetchNearbyPlaces = async (lat, lng) => {
-    const overpassQuery = `
-      [out:json][timeout:10];
-      (
-        node["amenity"~"cafe|restaurant|fast_food|bar"](around:1500,${lat},${lng});
-      );
-      out body 8;
-    `;
-    try {
-      const res = await axios.post(
-        "https://overpass-api.de/api/interpreter",
-        `data=${encodeURIComponent(overpassQuery)}`,
-        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-      );
-      if (res.data && res.data.elements) {
-        return res.data.elements.map((el) => ({
-          name: el.tags?.name || "Unnamed Place",
-          type: el.tags?.amenity || "place",
-          cuisine: el.tags?.cuisine || "",
-          lat: el.lat,
-          lon: el.lon,
-        }));
-      }
-    } catch (e) {
-      console.error("Overpass error:", e);
-    }
-    return [];
-  };
 
-  const haversineDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  };
 
-  const calculateFairness = (distArray) => {
-    if (distArray.length < 2) return 100;
-    const values = distArray.map((d) => d.distanceKm);
-    const avg = values.reduce((a, b) => a + b, 0) / values.length;
-    const maxDev = Math.max(...values.map((v) => Math.abs(v - avg)));
-    const score = Math.max(0, 100 - (maxDev / avg) * 100);
-    return Math.round(score);
-  };
+  const handleFindMeetingPoint = async (friendsData = null, overrideDestGeo = null) => {
+    const currentFriends = (Array.isArray(friendsData) && friendsData.length > 0) ? friendsData : friends;
 
-  const handleFindMeetingPoint = async () => {
-    if (friends.length < 2) {
+    if (currentFriends.length < 2) {
       setError("Add at least 2 friends to find a meeting point");
       return;
     }
@@ -216,12 +128,15 @@ function App() {
     setError(null);
     setDistances([]);
     setPlaces([]);
+    setTouristPlaces([]);
+    setSelectedTouristPlace(null);
     setFairness(null);
+    setDestinationData(null);
 
     try {
       // 1. Geocode all
       const geocodeResults = [];
-      for (const f of friends) {
+      for (const f of currentFriends) {
         const result = await geocodeLocation(f.location);
         if (result) {
           geocodeResults.push({
@@ -245,11 +160,114 @@ function App() {
 
       setCoordinates(geocodeResults);
 
-      // 2. Calculate midpoint
-      let sumLat = 0, sumLng = 0;
-      geocodeResults.forEach((c) => { sumLat += c.lat; sumLng += c.lng; });
-      const mid = { lat: sumLat / geocodeResults.length, lng: sumLng / geocodeResults.length };
+      let maxDist = 0;
+      let f1 = null, f2 = null;
+      for (let i = 0; i < geocodeResults.length; i++) {
+        for (let j = i + 1; j < geocodeResults.length; j++) {
+           const d = haversineDistance(geocodeResults[i].lat, geocodeResults[i].lng, geocodeResults[j].lat, geocodeResults[j].lng);
+           if (d > maxDist) {
+             maxDist = d;
+             f1 = geocodeResults[i];
+             f2 = geocodeResults[j];
+           }
+        }
+      }
+
+      if (maxDist > 500) {
+        let route = null;
+        try {
+           route = await getRouteDistance(f1.lat, f1.lng, f2.lat, f2.lng, travelMode);
+        } catch(e){}
+        const distKm = route ? route.distance / 1000 : maxDist;
+        const durationMin = route ? route.duration / 60 : null;
+        
+        setError(`This is out of range. The limit is 500km.`);
+        setLoading(false);
+        return;
+      }
+
+      // 2. Calculate optimal midpoint
+      let mid = null;
+      let destGeocode = overrideDestGeo;
+      let destRoute = null;
+
+      if (!destGeocode && destinationInput.trim()) {
+        destGeocode = await geocodeLocation(destinationInput.trim());
+      }
+      if (destGeocode) {
+        const destLat = destGeocode.lat;
+        const destLng = destGeocode.lng !== undefined ? destGeocode.lng : destGeocode.lon;
+        
+        let mergeMid = null;
+        try {
+          const routesToDest = [];
+          for (const f of geocodeResults) {
+            const r = await getRouteDistance(f.lat, f.lng, destLat, destLng, travelMode);
+            if (r && r.geometry && r.geometry.coordinates) {
+              routesToDest.push(r.geometry.coordinates); // GeoJSON LineString coordinates: [[lng, lat]]
+            }
+          }
+          // Find the earliest geographic point where ALL friends' routes naturally converge!
+          if (routesToDest.length === geocodeResults.length) {
+            const r0 = routesToDest[0];
+            for (let i = 0; i < r0.length; i += Math.max(1, Math.floor(r0.length / 100))) { // Sample along the route
+              const pt0 = r0[i];
+              let allMatch = true;
+              for (let j = 1; j < routesToDest.length; j++) {
+                const rj = routesToDest[j];
+                let foundMatch = false;
+                for (let k = 0; k < rj.length; k += Math.max(1, Math.floor(rj.length / 100))) {
+                  const ptk = rj[k];
+                  // If within 250 meters of an intersection, consider it a road merge
+                  if (haversineDistance(pt0[1], pt0[0], ptk[1], ptk[0]) < 0.25) { 
+                    foundMatch = true;
+                    break;
+                  }
+                }
+                if (!foundMatch) {
+                  allMatch = false;
+                  break;
+                }
+              }
+              if (allMatch) {
+                mergeMid = { lat: pt0[1], lng: pt0[0] };
+                break;
+              }
+            }
+          }
+        } catch(e) { console.error("Merge calculation failed", e); }
+
+        if (mergeMid) {
+          mid = mergeMid;
+        } else {
+          const optimalCoords = calculateOptimalMeetingPoint(geocodeResults, { lat: destLat, lng: destLng });
+          mid = { lat: optimalCoords.lat, lng: optimalCoords.lng };
+        }
+        
+        // Compute destRoute from this optimal geometric midpoint to the destination
+        const route = await getRouteDistance(mid.lat, mid.lng, destLat, destLng, travelMode);
+        destRoute = {
+          name: destGeocode.name || destinationInput.trim() || destGeocode.display || "Destination",
+          color: "#8b5cf6",
+          lat: destLat,
+          lng: destLng,
+          distanceKm: route ? route.distance / 1000 : haversineDistance(mid.lat, mid.lng, destLat, destLng),
+          durationMin: route ? route.duration / 60 : null,
+          geometry: route ? route.geometry : null,
+          display: destGeocode.display || destGeocode.name
+        };
+      } else {
+        // Normal midpoint calculation (optimal geometric median of all friends)
+        const optimalCoords = calculateOptimalMeetingPoint(geocodeResults, null);
+        mid = { lat: optimalCoords.lat, lng: optimalCoords.lng };
+        
+        if (destinationInput.trim()) {
+           setError(`Could not find destination: "${destinationInput}". Proceeding without it.`);
+        }
+      }
+
       setMidpoint(mid);
+      setDestinationData(destRoute);
 
       // 3. Routes + distances
       const routeResults = [];
@@ -258,6 +276,8 @@ function App() {
         routeResults.push({
           name: coord.name,
           color: coord.color,
+          lat: coord.lat,
+          lng: coord.lng,
           distanceKm: route ? route.distance / 1000 : haversineDistance(coord.lat, coord.lng, mid.lat, mid.lng),
           durationMin: route ? route.duration / 60 : null,
           geometry: route ? route.geometry : null,
@@ -268,7 +288,7 @@ function App() {
       // 4. Fairness
       setFairness(calculateFairness(routeResults));
 
-      // 5. Nearby places
+      // 5. Nearby places (food/cafe)
       const nearbyPlaces = await fetchNearbyPlaces(mid.lat, mid.lng);
       const enrichedPlaces = nearbyPlaces.map((p) => ({
         ...p,
@@ -276,6 +296,15 @@ function App() {
       }));
       enrichedPlaces.sort((a, b) => a.distKm - b.distKm);
       setPlaces(enrichedPlaces.slice(0, 6));
+
+      // 6. Tourist / trip-idea places near midpoint
+      const rawTouristPlaces = await fetchNearbyTouristPlaces(mid.lat, mid.lng);
+      const enrichedTourist = rawTouristPlaces.map((p) => ({
+        ...p,
+        distKm: haversineDistance(mid.lat, mid.lng, p.lat, p.lon),
+      }));
+      enrichedTourist.sort((a, b) => a.distKm - b.distKm);
+      setTouristPlaces(enrichedTourist.slice(0, 10));
     } catch (err) {
       console.error(err);
       setError(err.message || "Something went wrong.");
@@ -284,50 +313,102 @@ function App() {
     }
   };
 
+  const toggleLiveTracking = () => {
+    if (isTracking) {
+      if (trackingIdRef.current) navigator.geolocation.clearWatch(trackingIdRef.current);
+      setIsTracking(false);
+      setLiveLocation(null);
+      socket.emit("stop_live_location", { sessionId, userId: socket.id });
+    } else {
+      if (!navigator.geolocation) {
+        setError("Geolocation is not supported by your browser");
+        return;
+      }
+      setIsTracking(true);
+      let isFirstTrack = true;
+      trackingIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          setLiveLocation({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+          socket.emit("sync_live_location", { 
+            sessionId, 
+            userId: socket.id, 
+            lat: pos.coords.latitude, 
+            lng: pos.coords.longitude 
+          });
+          // Center the map onto user location on the first track
+          if (mapRef.current && isFirstTrack) {
+             mapRef.current.setView([pos.coords.latitude, pos.coords.longitude], 15);
+             isFirstTrack = false;
+          }
+        },
+        (err) => {
+          setError("Failed to track location: " + err.message);
+          setIsTracking(false);
+        },
+        { enableHighAccuracy: true, maximumAge: 0 }
+      );
+    }
+  };
+
   const handleClear = () => {
-    setFriends([]);
+    syncToNetwork([]);
     setCoordinates([]);
     setMidpoint(null);
     setDistances([]);
     setPlaces([]);
+    setTouristPlaces([]);
+    setSelectedTouristPlace(null);
     setFairness(null);
+    setDestinationData(null);
     setError(null);
     setFriendName("");
     setFriendLocation("");
+    setDestinationInput("");
+    if (isTracking && trackingIdRef.current) {
+      navigator.geolocation.clearWatch(trackingIdRef.current);
+    }
+    if (isTracking) {
+      socket.emit("stop_live_location", { sessionId, userId: socket.id });
+    }
+    setIsTracking(false);
+    setLiveLocation(null);
   };
 
   const handleShare = () => {
     if (!midpoint) return;
-    const text = `MeetHub - Meeting Point\n📍 ${midpoint.lat.toFixed(4)}, ${midpoint.lng.toFixed(4)}\n\nFriends:\n${friends.map((f) => `• ${f.name}: ${f.location}`).join("\n")}\n\nFairness Score: ${fairness}%`;
+    
+    // Generate modern interactive session URL
+    const shareUrl = `${window.location.origin}${window.location.pathname}?session=${sessionId}`;
+
+    const text = `MeetHub - Live Interactive Map 🌍\n\nClick the link to join our live session, add your location, and find the perfect meeting spot together instantly!\n\n${shareUrl}\n\n📍 Current Meeting Point: ${midpoint.lat.toFixed(4)}, ${midpoint.lng.toFixed(4)}`;
+    
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
-  const placeEmoji = (type) => {
-    const map = { cafe: "☕", restaurant: "🍽️", fast_food: "🍔", bar: "🍺" };
-    return map[type] || "📍";
+
+
+  const handleGoToTouristPlace = (place) => {
+    setSelectedTouristPlace(place);
+    setDestinationInput(place.name);
+    // Instantly calculate optimal meeting route for this new destination
+    handleFindMeetingPoint(null, {
+      lat: place.lat,
+      lng: place.lon,
+      name: place.name,
+      display: place.name
+    });
   };
 
-  const formatDuration = (min) => {
-    if (!min) return "N/A";
-    if (min < 60) return `${Math.round(min)} min`;
-    const h = Math.floor(min / 60);
-    const m = Math.round(min % 60);
-    return `${h}h ${m}m`;
-  };
-
-  const formatDistance = (km) => {
-    if (km < 1) return `${Math.round(km * 1000)} m`;
-    return `${km.toFixed(1)} km`;
-  };
-
-  const getFairnessColor = (score) => {
-    if (score >= 80) return "#10b981";
-    if (score >= 50) return "#f59e0b";
-    return "#ef4444";
-  };
+  const allLiveLocations = [
+    ...(liveLocation ? [{ ...liveLocation, id: "me" }] : []),
+    ...Object.keys(otherLiveLocations).map(id => ({ ...otherLiveLocations[id], id }))
+  ];
 
   return (
     <div className="app-container">
@@ -375,51 +456,37 @@ function App() {
             <button className={travelMode === "walk" ? "active" : ""} onClick={() => setTravelMode("walk")} title="Walk">🚶</button>
           </div>
 
-          {/* Friends List */}
+          {/* Friends List Component */}
           {friends.length > 0 && (
-            <div className="friends-list">
-              {friends.map((f, i) => (
-                <div key={i} className={`friend-card ${editingIndex === i ? "editing" : ""}`}>
-                  {editingIndex === i ? (
-                    <div className="edit-form">
-                      <input 
-                        value={editName} 
-                        onChange={(e) => setEditName(e.target.value)} 
-                        placeholder="Name (optional)" 
-                      />
-                      <input 
-                        value={editLocation} 
-                        onChange={(e) => setEditLocation(e.target.value)} 
-                        placeholder="Location" 
-                        onKeyDown={(e) => e.key === "Enter" && handleSaveEdit(i)}
-                      />
-                      <div className="edit-actions">
-                        <button className="edit-save" onClick={() => handleSaveEdit(i)}>Save</button>
-                        <button className="edit-cancel" onClick={() => setEditingIndex(null)}>Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="friend-avatar" style={{ background: f.color }}>
-                        {f.name.charAt(0).toUpperCase()}
-                      </div>
-                      <div className="friend-info">
-                        <div className="friend-name">{f.name}</div>
-                        <div className="friend-location-text">{f.location}</div>
-                      </div>
-                      <div className="friend-actions">
-                        <button className="friend-edit" title="Edit" onClick={() => handleEditFriend(i)}>✎</button>
-                        <button className="friend-remove" title="Remove" onClick={() => handleRemoveFriend(i)}>×</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
+            <FriendList
+              friends={friends}
+              editingIndex={editingIndex}
+              editName={editName}
+              editLocation={editLocation}
+              setEditName={setEditName}
+              setEditLocation={setEditLocation}
+              handleSaveEdit={handleSaveEdit}
+              handleEditFriend={handleEditFriend}
+              handleRemoveFriend={handleRemoveFriend}
+              setEditingIndex={setEditingIndex}
+            />
           )}
 
           {/* Errors */}
           {error && <div className="error-toast">⚠️ {error}</div>}
+
+          {/* Destination Form */}
+          <div className="search-section" style={{ marginTop: '16px' }}>
+            <h3>Final Destination (Optional)</h3>
+            <div className="search-box">
+              <input
+                type="text"
+                placeholder="Where to together? (e.g. Tada Waterfalls)"
+                value={destinationInput}
+                onChange={(e) => setDestinationInput(e.target.value)}
+              />
+            </div>
+          </div>
 
           {/* Action Buttons */}
           <div className="action-buttons">
@@ -431,84 +498,23 @@ function App() {
             </button>
           </div>
 
-          {/* Results */}
+          {/* Results section */}
           {midpoint && !loading && (
-            <div className="results-section">
-              {/* Meeting Point */}
-              <div className="result-card success">
-                <h4>📌 Meeting Point</h4>
-                <div className="midpoint-coords">
-                  <span className="coord-badge">{midpoint.lat.toFixed(4)}°</span>
-                  <span className="coord-badge">{midpoint.lng.toFixed(4)}°</span>
-                </div>
-
-                {/* Fairness */}
-                {fairness !== null && (
-                  <div className="fairness-meter">
-                    <div className="fairness-label">
-                      <span>Fairness Score</span>
-                      <span className="fairness-score" style={{ color: getFairnessColor(fairness) }}>
-                        {fairness}%
-                      </span>
-                    </div>
-                    <div className="fairness-bar">
-                      <div
-                        className="fairness-fill"
-                        style={{
-                          width: `${fairness}%`,
-                          background: `linear-gradient(90deg, ${getFairnessColor(fairness)}, ${getFairnessColor(fairness)}88)`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* ETAs */}
-              {distances.length > 0 && (
-                <div className="result-card">
-                  <h4>🕐 Travel Times ({travelMode === "car" ? "Driving" : travelMode === "bike" ? "Cycling" : "Walking"})</h4>
-                  <div className="eta-list">
-                    {distances.map((d, i) => (
-                      <div key={i} className="eta-item">
-                        <div className="eta-left">
-                          <div className="eta-dot" style={{ background: d.color }} />
-                          <span className="eta-name">{d.name}</span>
-                        </div>
-                        <div className="eta-right">
-                          <div className="eta-time">{formatDuration(d.durationMin)}</div>
-                          <div className="eta-distance">{formatDistance(d.distanceKm)}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Nearby Places */}
-              {places.length > 0 && (
-                <div className="result-card">
-                  <h4>🏪 Nearby Places to Meet</h4>
-                  <div className="places-list">
-                    {places.map((p, i) => (
-                      <div key={i} className="place-item">
-                        <div className="place-icon">{placeEmoji(p.type)}</div>
-                        <div className="place-info">
-                          <div className="place-name">{p.name}</div>
-                          <div className="place-type">{p.cuisine || p.type}</div>
-                        </div>
-                        <div className="place-dist">{formatDistance(p.distKm)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Share */}
-              <button className={`share-btn ${copied ? "copied" : ""}`} onClick={handleShare}>
-                {copied ? "✓ Copied to Clipboard!" : "📤 Share Meeting Details"}
-              </button>
-            </div>
+            <ResultsPanel
+              midpoint={midpoint}
+              destinationData={destinationData}
+              distances={distances}
+              places={places}
+              touristPlaces={touristPlaces}
+              selectedTouristPlace={selectedTouristPlace}
+              fairness={fairness}
+              travelMode={travelMode}
+              copied={copied}
+              handleShare={handleShare}
+              handleGoToTouristPlace={handleGoToTouristPlace}
+              isTracking={isTracking}
+              toggleLiveTracking={toggleLiveTracking}
+            />
           )}
 
           {/* Empty State */}
@@ -534,6 +540,9 @@ function App() {
           midpoint={midpoint}
           distances={distances}
           places={places}
+          touristPlaces={touristPlaces}
+          liveLocations={allLiveLocations}
+          destinationData={destinationData}
           mapRef={mapRef}
         />
       </div>

@@ -779,3 +779,76 @@ html, body, #root {
     border-top: 1px solid var(--border);
   }
 }
+
+/* ===== NAVIGATION BUTTONS ===== */
+.start-nav-btn {
+  display: inline-block;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.main-nav-btn {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: white;
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+.main-nav-btn:hover {
+  background: var(--accent-hover);
+  box-shadow: var(--shadow-md);
+}
+
+.small-nav-btn {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+}
+
+.small-nav-btn:hover {
+  background: var(--border);
+  border-color: var(--border-hover);
+}
+
+/* ===== TOURIST PLACE ITEMS ===== */
+.tourist-place-item {
+  transition: all 0.2s ease;
+  border: 1.5px solid transparent !important;
+}
+
+.tourist-place-item:hover {
+  border-color: #6366f1 !important;
+  background: #f5f3ff !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+}
+
+.tourist-place-item.selected-trip {
+  border-color: #10b981 !important;
+  background: #f0fdf4 !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.10);
+}
+
+.start-nav-btn.small-nav-btn[style*="6366f1"]:hover,
+.start-nav-btn.small-nav-btn[style*="10b981"]:hover {
+  opacity: 0.87;
+  transform: scale(1.04);
+}
+
+/* ===== DESTINATION INPUT SECTION ===== */
+.search-section .search-box input[placeholder*="together"] {
+  background: #faf5ff;
+}
+
+.search-section .search-box:focus-within input[placeholder*="together"] {
+  background: white;
+}
+
