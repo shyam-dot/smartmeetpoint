@@ -114,8 +114,111 @@ function App() {
     // eslint-disable-next-line
   }, []);
 
+  const syncToNetwork = (newFriends) => {
+    setFriends(newFriends);
+    socket.emit("sync_friends", { sessionId, friends: newFriends });
+  };
 
+  const handleAddFriend = () => {
+    const loc = friendLocation.trim();
+    const name = friendName.trim() || `Friend ${friends.length + 1}`;
+    if (!loc) {
+      setError("Please enter a location");
+      return;
+    }
+    if (friends.find((f) => f.location === loc)) {
+      setError("This location is already added");
+      return;
+    }
 
+    const usedColors = friends.map(f => f.color);
+    const availableColors = AVATAR_COLORS.filter(c => !usedColors.includes(c));
+    const nextColor = availableColors.length > 0 ? availableColors[0] : AVATAR_COLORS[friends.length % AVATAR_COLORS.length];
+
+    const newFriendsList = [...friends, {
+      name,
+      location: loc,
+      color: nextColor,
+    }];
+    
+    syncToNetwork(newFriendsList);
+    setFriendName("");
+    setFriendLocation("");
+    setError(null);
+  };
+
+  const handleEditFriend = (index) => {
+    setEditingIndex(index);
+    setEditName(friends[index].name);
+    setEditLocation(friends[index].location);
+  };
+
+  const handleSaveEdit = (index) => {
+    const loc = editLocation.trim();
+    if (!loc) {
+      setEditingIndex(null);
+      return;
+    }
+    
+    // Check if new location is already in another friend's address
+    if (friends.some((f, i) => i !== index && f.location === loc)) {
+      setError("This location is already added by someone else");
+      return;
+    }
+    
+    const newFriends = [...friends];
+    newFriends[index] = { ...newFriends[index], name: editName.trim() || `Friend ${index + 1}`, location: loc };
+    
+    syncToNetwork(newFriends);
+    setEditingIndex(null);
+    setError(null);
+    
+    // Reset results since a location changed
+    setCoordinates([]);
+    setMidpoint(null);
+    setDistances([]);
+    setPlaces([]);
+    setTouristPlaces([]);
+    setFairness(null);
+    setDestinationData(null);
+  };
+
+  const handleRemoveFriend = (index) => {
+    const newFriends = friends.filter((_, i) => i !== index);
+    syncToNetwork(newFriends);
+    if (newFriends.length < 2) {
+      setCoordinates([]);
+      setMidpoint(null);
+      setDistances([]);
+      setPlaces([]);
+      setTouristPlaces([]);
+      setFairness(null);
+      setDestinationData(null);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddFriend();
+    }
+  };
+
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by your browser");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude.toFixed(4);
+        const lng = pos.coords.longitude.toFixed(4);
+        setFriendLocation(`${lat}, ${lng}`);
+        if (!friendName.trim()) setFriendName("Me");
+      },
+      () => setError("Could not get your location. Please allow permissions.")
+    );
+  };
   const handleFindMeetingPoint = async (friendsData = null, overrideDestGeo = null) => {
     const currentFriends = (Array.isArray(friendsData) && friendsData.length > 0) ? friendsData : friends;
 
