@@ -11,6 +11,8 @@
     <a href="https://github.com/shyam-dot/MeetHub/issues">Report Bug</a>
     ·
     <a href="https://github.com/shyam-dot/MeetHub/issues">Request Feature</a>
+    .
+    <a href="https://smartmeetpoint.netlify.app">Demo Feature</a>
   </p>
 </p>
 
@@ -18,7 +20,7 @@
 
 MeetHub is a frontend web app that calculates the geographic midpoint between multiple locations, displays realistic travel ETAs, and suggests nearby places. Enter any number of cities, addresses, or landmarks and see where everyone should meet.
 
-live demo : smartmeetpoint.netlify.app
+
 
 > **🎉 Zero Setup Required!** MeetHub runs entirely on free, open-source APIs. No API keys, tokens, or backend servers are needed to start.
 
