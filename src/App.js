@@ -277,12 +277,6 @@ function App() {
       }
 
       if (maxDist > 500) {
-        let route = null;
-        try {
-           route = await getRouteDistance(f1.lat, f1.lng, f2.lat, f2.lng, travelMode);
-        } catch(e){}
-        const distKm = route ? route.distance / 1000 : maxDist;
-        const durationMin = route ? route.duration / 60 : null;
         
         setError(`This is out of range. The limit is 500km.`);
         setLoading(false);
