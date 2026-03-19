@@ -264,14 +264,11 @@ function App() {
       setCoordinates(geocodeResults);
 
       let maxDist = 0;
-      let f1 = null, f2 = null;
       for (let i = 0; i < geocodeResults.length; i++) {
         for (let j = i + 1; j < geocodeResults.length; j++) {
            const d = haversineDistance(geocodeResults[i].lat, geocodeResults[i].lng, geocodeResults[j].lat, geocodeResults[j].lng);
            if (d > maxDist) {
              maxDist = d;
-             f1 = geocodeResults[i];
-             f2 = geocodeResults[j];
            }
         }
       }
