@@ -11,8 +11,6 @@
     <a href="https://github.com/shyam-dot/MeetHub/issues">Report Bug</a>
     ·
     <a href="https://github.com/shyam-dot/MeetHub/issues">Request Feature</a>
-    .
-    <a href="https://smartmeetpoint.netlify.app">Demo Feature</a>
   </p>
 </p>
 
